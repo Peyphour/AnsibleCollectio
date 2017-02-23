@@ -1,0 +1,58 @@
+---
+
+
+- hosts: all
+  user: root
+  gather_facts: False
+  
+  tasks:
+  - name: install python 2
+    raw: test -e /usr/bin/python || (apt -y update && apt install -y python-minimal)
+
+- hosts: all
+  user: root
+  vars_prompt:
+   - name: "vpn_password"
+     prompt: "Enter VPN password"
+     private: yes
+     encrypt: "md5_crypt"
+     confirm: yes
+     salt_size: 7
+
+  tasks:
+    - name: Get OpenVPN AS
+      get_url: 
+       url: http://swupdate.openvpn.org/as/openvpn-as-2.1.4b-Ubuntu16.amd_64.deb
+       dest: /tmp/openvpnas.deb
+
+    - name: Install OpenVPN AS
+      apt: deb="/tmp/openvpnas.deb"
+
+    - name: Change VPN password
+      user: name=openvpn update_password=always password={{ vpn_password }}
+
+    - name: Install LetsEncrypt
+      apt: 
+        name: letsencrypt
+        update_cache: yes
+
+    - name: Stopping OpenVpn AS
+      service:
+        name: openvpnas
+        state: stopped
+
+    - name: Getting SSL certificate for web server
+      shell: letsencrypt certonly -n --agree-tos --email root@{{inventory_hostname}} --standalone -d {{inventory_hostname}}
+
+    - name: Removing self signed keys
+      file:
+        state: absent
+        path: "/usr/local/openvpn_as/etc/web-ssl/"
+    
+    - name: Installing LetsEncrypt keys
+      shell: mkdir /usr/local/openvpn_as/etc/web-ssl && cp /etc/letsencrypt/live/{{inventory_hostname}}/privkey.pem /usr/local/openvpn_as/etc/web-ssl/server.key && cp /etc/letsencrypt/live/{{inventory_hostname}}/cert.pem /usr/local/openvpn_as/etc/web-ssl/ca.crt && cp /etc/letsencrypt/live/{{inventory_hostname}}/fullchain.pem /usr/local/openvpn_as/etc/web-ssl/server.crt
+ 
+    - name: Restarting OpenVPN AS
+      service:
+        name: openvpnas
+        state: started
