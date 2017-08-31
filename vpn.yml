@@ -1,7 +1,7 @@
 ---
 
 
-- hosts: all
+- hosts: vpn
   user: root
   gather_facts: False
   
