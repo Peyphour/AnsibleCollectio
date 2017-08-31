@@ -1,0 +1,13 @@
+<VirtualHost *:80>
+        ServerName {{ inventory_hostname }}
+        RedirectPermanent / https://{{ inventory_hostname }}/
+</VirtualHost>
+
+<VirtualHost *:443>
+    ServerName {{ inventory_hostname }}
+    SSLEngine On
+    SSLCertificateKeyFile   /etc/letsencrypt/live/{{ inventory_hostname }}/privkey.pem
+    SSLCertificateFile      /etc/letsencrypt/live/{{ inventory_hostname }}/fullchain.pem
+    ProxyPass "/" "http://localhost:8080/"
+    ProxyPassReverse "/" "http://localhost:8080/"
+</VirtualHost>

@@ -1,0 +1,141 @@
+---
+- hosts: mail
+  user: root
+  gather_facts: False
+  
+  tasks:
+  - name: install python 2
+    raw: test -e /usr/bin/python || (apt -y update && apt install -y python-minimal)
+
+- hosts: mail
+  user: root
+  
+  vars_prompt:
+    - name: "admin_user"
+      prompt: "Enter admin user email address"
+      private: no
+    - name: "admin_password"
+      prompt: "Enter admin user password"
+      private: yes
+      confirm: yes
+
+  tasks:
+    - name: Update and upgrade APT packages
+      apt: 
+        upgrade: dist
+        
+    - name: Install dependencies
+      apt: name={{item}} state=installed
+      with_items:
+        - letsencrypt
+        - mysql-server
+        - mysql-client
+        - openjdk-8-jdk
+        - git
+        - gradle
+        - openssl
+        - python-pexpect
+        - python-mysqldb
+        - python-bcrypt
+        - apache2
+        - haveged
+        - daemon
+        
+    - name: Stopping Apache
+      service:
+        name: apache2
+        state: stopped
+        
+    - name: Stopping all Java process
+      command: killall -9 java
+      ignore_errors: yes
+      
+    - name: Getting SSL certificate from LetsEncrypt
+      shell: letsencrypt certonly -n --agree-tos --email root@{{inventory_hostname}} --standalone -d {{inventory_hostname}}
+      
+    - name: Clone Git repository
+      git:
+        repo: https://github.com/Peyphour/kotlin_smtp_server.git
+        dest: /opt/server
+        
+    - name: Export PKCS12 keystore from LetsEncrypt keys
+      raw: "openssl pkcs12 -export -out /opt/keystore.pkcs12 -in /etc/letsencrypt/live/{{inventory_hostname}}/cert.pem -inkey 
+/etc/letsencrypt/live/{{inventory_hostname}}/privkey.pem -password pass:"
+
+    - name: Convert PKCS12 keystore to JKS format
+      expect: 
+        command: java -cp /opt/server/lib/jetty-6.1.10.jar org.mortbay.jetty.security.PKCS12Import /opt/keystore.pkcs12 /opt/keystore.jks
+        responses:
+          (?i)passphrase: ""
+          
+    - name: Remove PKCS12 keystore
+      file:
+        state: absent
+        path: /opt/keystore.pkcs12
+        
+    - name: Build mail server
+      command: gradle bootRepackage
+      args:
+        chdir: /opt/server/
+        
+    - name: Enable Apache SSL module
+      command: a2enmod ssl creates=/etc/apache2/mods-enabled/ssl.load
+      
+    - name: Enable Apache Proxy module
+      command: a2enmod proxy_http creates=/etc/apache2/mods-enabled/proxy_http.load
+      
+    - name: Disable all Apache sites
+      command: a2dissite *
+      
+    - name: Add Apache config
+      template: src=apache2_ssl_config
+        dest=/etc/apache2/sites-available/default.conf
+        owner=root
+        group=root
+        
+    - name: Enable our site
+      command: a2ensite default creates=/etc/apache2/sites-enabled/default.conf
+      
+    - name: Start Apache
+      service: 
+        name: apache2 
+        state: restarted
+        
+    - name: Enable Haveged PRNG source
+      command: update-rc.d haveged defaults
+      
+    - name: Allocate a swap file (2G)
+      command: fallocate -l 2G /swap creates=/swap
+      
+    - name: Set permissions on swap file
+      file:
+        path: /swap
+        mode: 0600
+        
+    - name: Create the swap
+      command: mkswap /swap
+      ignore_errors: yes
+      
+    - name: Enable the swap
+      command: swapon /swap
+      ignore_errors: yes
+      
+    - name: Create database for server
+      mysql_db: name=mail state=present
+      ignore_errors: yes
+      
+    - name: Create MySQL root user
+      mysql_user: name=root password=azerty priv=*.*:ALL host=localhost
+      ignore_errors: yes
+      
+    - shell: python -c "import bcrypt;  print bcrypt.hashpw('{{ admin_password }}', bcrypt.gensalt(prefix='2a'))"
+      register: hashed_password
+      
+    - name: Create admin user import file
+      copy: content="INSERT INTO user(id, enabled, mail, password) VALUES (1, 1, '{{ admin_user }}', '{{ hashed_password.stdout }}');INSERT INTO user_authorities (user_id, authorities) VALUES (1, 0);" dest=/tmp/import.sql
+    
+    - name: Import admin file
+      shell: mysql -pazerty mail < /tmp/import.sql
+      
+    - name: Start the server
+      shell: daemon -osyslog -- java -jar -Xms256m -Xmx2g  -Djavax.net.ssl.keyStore=/opt/keystore.jks -jar /opt/server/build/libs/*.jar
