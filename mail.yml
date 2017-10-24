@@ -59,19 +59,15 @@
         dest: /opt/server
         
     - name: Export PKCS12 keystore from LetsEncrypt keys
-      raw: "openssl pkcs12 -export -out /opt/keystore.pkcs12 -in /etc/letsencrypt/live/{{inventory_hostname}}/cert.pem -inkey 
-/etc/letsencrypt/live/{{inventory_hostname}}/privkey.pem -password pass:"
+      raw: "openssl pkcs12 -export -in /etc/letsencrypt/live/{{inventory_hostname}}/fullchain.pem -inkey /etc/letsencrypt/live/{{inventory_hostname}}/privkey.pem -out /opt/keystore.p12 -name mail -password pass:azerty"
 
     - name: Convert PKCS12 keystore to JKS format
-      expect: 
-        command: java -cp /opt/server/lib/jetty-6.1.10.jar org.mortbay.jetty.security.PKCS12Import /opt/keystore.pkcs12 /opt/keystore.jks
-        responses:
-          (?i)passphrase: ""
+      raw: "keytool -importkeystore -deststorepass 'azerty' -destkeypass 'azerty' -destkeystore /opt/keystore.jks -srckeystore /opt/keystore.p12 -srcstoretype PKCS12 -srcstorepass 'azerty' -alias mail"
           
     - name: Remove PKCS12 keystore
       file:
         state: absent
-        path: /opt/keystore.pkcs12
+        path: /opt/keystore.p12
         
     - name: Build mail server
       command: gradle bootRepackage
@@ -133,9 +129,15 @@
       
     - name: Create admin user import file
       copy: content="INSERT INTO user(id, enabled, mail, password) VALUES (1, 1, '{{ admin_user }}', '{{ hashed_password.stdout }}');INSERT INTO user_authorities (user_id, authorities) VALUES (1, 0);" dest=/tmp/import.sql
-    
-    - name: Import admin file
-      shell: mysql -pazerty mail < /tmp/import.sql
       
     - name: Start the server
-      shell: daemon -osyslog -- java -jar -Xms256m -Xmx2g  -Djavax.net.ssl.keyStore=/opt/keystore.jks -jar /opt/server/build/libs/*.jar
+      shell: daemon --output=/var/log/mail-server.log -- java -jar -Xms256m -Xmx2g -Djavax.net.ssl.keyStorePassword=azerty  -Djavax.net.ssl.keyStore=/opt/keystore.jks -jar /opt/server/build/libs/*.jar
+      
+    - name: Wait 300 seconds for the server to start (port 8080 open)
+      wait_for:
+        port: 8080
+    
+    - name: Import admin SQL file
+      shell: mysql -pazerty mail < /tmp/import.sql
+      
+    
