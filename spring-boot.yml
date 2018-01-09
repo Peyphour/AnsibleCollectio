@@ -1,0 +1,92 @@
+---
+
+- hosts: spring-boot
+  user: root
+  gather_facts: False
+  
+  tasks:
+  - name: install python 2
+    raw: test -e /usr/bin/python || (apt -y update && apt install -y python-minimal)
+
+- hosts: spring-boot
+  user: root
+  
+  vars_prompt:
+    - name: "git_repo"
+      prompt: "Git repository to instal"
+      private: no
+      
+  tasks:
+    - name: "Add certbot APT repository"
+      apt_repository:
+        repo: "ppa:certbot/certbot"
+        state: present
+    - name: "Update package"
+      apt:
+        update_cache: yes
+        upgrade: dist
+    - name: "Install dependencies"
+      apt: name={{item}} state=installed
+      with_items:
+        - apache2
+        - letsencrypt
+        - python-certbot-apache
+        - openjdk-8-jdk
+        - maven
+        - daemon
+        
+    - name: "Getting SSL cert from LetsEncrypt"
+      shell: letsencrypt --apache -n --agree-tos --email root@{{inventory_hostname}} -d {{inventory_hostname}}
+      
+    - name: "Clone git repo"
+      git:
+        repo: "{{git_repo}}"
+        dest: /opt/server
+        
+    - name: Build application
+      command: ./gradlew bootRepackage
+      args:
+        chdir: /opt/server
+        
+    - name: Enable Apache Proxy module
+      command: a2enmod proxy_http
+      
+    - name: Disable all Apache sites
+      command: a2dissite *
+      
+    - name: Add Apache config
+      template: src=apache2_ssl_config
+        dest=/etc/apache2/sites-available/default.conf
+        owner=root
+        group=root
+        
+    - name: Enable our site
+      command: a2ensite default creates=/etc/apache2/sites-enabled/default.conf
+      
+    - name: Start Apache
+      service: 
+        name: apache2 
+        state: restarted
+        
+    - name: Allocate a swap file (2G)
+      command: fallocate -l 2G /swap creates=/swap
+      
+    - name: Set permissions on swap file
+      file:
+        path: /swap
+        mode: 0600
+        
+    - name: Create the swap
+      command: mkswap /swap
+      ignore_errors: yes
+      
+    - name: Enable the swap
+      command: swapon /swap
+      ignore_errors: yes
+      
+    - name: Start the application
+      shell: daemon --output=/var/log/server.log -- java -jar /opt/server/build/libs/*.jar
+      
+    - name: Wait for the server to start (port 8080 open)
+      wait_for:
+        port: 8080
